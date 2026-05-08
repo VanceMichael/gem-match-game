@@ -15,6 +15,14 @@ export enum SpecialGemType {
   COLOR_BOMB = 4
 }
 
+export enum SpecialCombination {
+  NONE = 'none',
+  CROSS = 'cross',
+  THREE_ROWS = 'three_rows',
+  FIVE_BY_FIVE = 'five_by_five',
+  CROSS_PLUS_BLAST = 'cross_plus_blast'
+}
+
 export enum GameState {
   READY = 'ready',
   SELECTING = 'selecting',
@@ -87,4 +95,12 @@ export interface CascadeResult {
   totalScore: number;
   comboCount: number;
   gemsCleared: number;
+}
+
+export interface CombinationResult {
+  combination: SpecialCombination;
+  gemsToRemove: Gem[];
+  scoreMultiplier: number;
+  triggerRow: number;
+  triggerCol: number;
 }
