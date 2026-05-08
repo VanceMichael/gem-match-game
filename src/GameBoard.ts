@@ -23,10 +23,21 @@ import {
 import {
   determineSpecialGemType,
   getGemsToRemoveBySpecialGem,
-  convertToSpecialGem
+  convertToSpecialGem,
+  handleSpecialGemCollision,
+  isSpecialGemCollision,
+  processChainGems,
+  SpecialGemCombination,
+  getSpecialGemBaseScore
 } from './specialGems';
 
 export type SwapCallback = (gem1: Gem, gem2: Gem, isSwapBack: boolean) => Promise<void>;
+
+export type SpecialCombinationCallback = (
+  gem1: Gem,
+  gem2: Gem,
+  combination: SpecialGemCombination
+) => Promise<void>;
 
 export type BoardUpdateCallback = (
   gemsToRemove: Gem[],
@@ -48,6 +59,7 @@ export class GameBoard {
   private onUpdate: BoardUpdateCallback | null;
   private onScoreUpdate: ScoreUpdateCallback | null;
   private onSwap: SwapCallback | null;
+  private onSpecialCombination: SpecialCombinationCallback | null;
   private isSimulation: boolean;
 
   constructor(simulation = false) {
@@ -57,6 +69,7 @@ export class GameBoard {
     this.onUpdate = null;
     this.onScoreUpdate = null;
     this.onSwap = null;
+    this.onSpecialCombination = null;
     this.isSimulation = simulation;
     
     while (!hasPossibleMoves(this.board)) {
@@ -75,6 +88,10 @@ export class GameBoard {
 
   setSwapCallback(callback: SwapCallback): void {
     this.onSwap = callback;
+  }
+
+  setSpecialCombinationCallback(callback: SpecialCombinationCallback): void {
+    this.onSpecialCombination = callback;
   }
 
   getState(): GameState {
@@ -127,13 +144,28 @@ export class GameBoard {
     
     const matches = findAllMatches(this.board);
     
-    if (matches.length === 0) {
+    const hasSpecialCollision = isSpecialGemCollision(gem1, gem2);
+    
+    if (matches.length === 0 && !hasSpecialCollision) {
       if (this.onSwap && !this.isSimulation) {
         await this.onSwap(gem1, gem2, true);
       }
       swapGems(this.board, gem1, gem2);
       this.state = GameState.READY;
       return;
+    }
+
+    if (hasSpecialCollision) {
+      if (this.onSpecialCombination && !this.isSimulation) {
+        const result = handleSpecialGemCollision(gem1, gem2, this.board);
+        if (result.combination !== SpecialGemCombination.NONE) {
+          await this.onSpecialCombination(gem1, gem2, result.combination);
+        }
+      }
+      if (matches.length === 0) {
+        await this.processSpecialCollision(gem1, gem2);
+        return;
+      }
     }
 
     await this.processMatches();
@@ -148,6 +180,91 @@ export class GameBoard {
       }
     }
     return false;
+  }
+
+  private async processSpecialCollision(gem1: Gem, gem2: Gem): Promise<CascadeResult> {
+    const result: CascadeResult = {
+      totalScore: 0,
+      comboCount: 1,
+      gemsCleared: 0
+    };
+
+    this.state = GameState.CASCADE;
+
+    const collisionResult = handleSpecialGemCollision(gem1, gem2, this.board);
+    const gemsToRemove: Gem[] = [...collisionResult.triggeredGems];
+    const chainSpecialGems: Gem[] = [...collisionResult.chainGems];
+    let specialBaseScore = collisionResult.baseScore;
+    const gemsToUpdate: Gem[] = [];
+
+    for (const g of collisionResult.gemsToRemove) {
+      if (!gemsToRemove.some(existing => existing.id === g.id)) {
+        gemsToRemove.push(g);
+      }
+    }
+
+    if (chainSpecialGems.length > 0) {
+      const chainResult = processChainGems(chainSpecialGems, this.board);
+      specialBaseScore += chainResult.totalChainScore;
+      
+      for (const g of chainResult.gemsToRemove) {
+        if (!gemsToRemove.some(existing => existing.id === g.id)) {
+          gemsToRemove.push(g);
+        }
+      }
+    }
+
+    const matchScore = this.calculateMatchScore(
+      gemsToRemove.length,
+      result.comboCount,
+      true,
+      specialBaseScore
+    );
+    result.totalScore += matchScore;
+    result.gemsCleared += gemsToRemove.length;
+
+    if (this.onScoreUpdate) {
+      this.onScoreUpdate(matchScore, result.comboCount, gemsToRemove.length);
+    }
+
+    for (const gem of gemsToRemove) {
+      this.board[gem.row][gem.col] = null;
+    }
+
+    const gemsToFall = this.findGemsToFall();
+    const gemsToCreate = this.findGemsToCreate();
+
+    if (this.onUpdate && !this.isSimulation) {
+      await this.onUpdate(gemsToRemove, gemsToFall, gemsToCreate, gemsToUpdate);
+    }
+
+    this.applyGravity();
+    
+    for (const { gem } of gemsToCreate) {
+      if (gem.row >= 0 && gem.row < BOARD_ROWS && 
+          gem.col >= 0 && gem.col < BOARD_COLS &&
+          this.board[gem.row][gem.col] === null) {
+        this.board[gem.row][gem.col] = gem;
+      }
+    }
+    
+    this.fillBoard();
+
+    const cascadeResult = await this.processMatches();
+    result.totalScore += cascadeResult.totalScore;
+    result.comboCount = Math.max(result.comboCount, cascadeResult.comboCount);
+    result.gemsCleared += cascadeResult.gemsCleared;
+
+    this.state = GameState.READY;
+    
+    if (!hasPossibleMoves(this.board)) {
+      shuffleBoard(this.board);
+      while (!hasPossibleMoves(this.board)) {
+        shuffleBoard(this.board);
+      }
+    }
+
+    return result;
   }
 
   async processMatches(): Promise<CascadeResult> {
@@ -194,23 +311,80 @@ export class GameBoard {
       const gemsToRemove: Gem[] = [];
       const specialGemsToCreate: { gem: Gem; specialType: SpecialGemType }[] = [];
       const gemsToUpdate: Gem[] = [];
+      const processedGems: Set<string> = new Set();
+      const chainSpecialGems: Gem[] = [];
+      let specialBaseScore = 0;
+      let hasSpecialCollision = false;
 
       for (const match of matches) {
         const specialType = determineSpecialGemType([match]);
         
+        const specialGemsInMatch = match.gems.filter(g => 
+          g.specialType !== SpecialGemType.NONE && 
+          !processedGems.has(g.id)
+        );
+
+        if (specialGemsInMatch.length >= 2) {
+          hasSpecialCollision = true;
+          for (let i = 0; i < specialGemsInMatch.length - 1; i++) {
+            for (let j = i + 1; j < specialGemsInMatch.length; j++) {
+              const gem1 = specialGemsInMatch[i];
+              const gem2 = specialGemsInMatch[j];
+              
+              processedGems.add(gem1.id);
+              processedGems.add(gem2.id);
+              
+              const collisionResult = handleSpecialGemCollision(gem1, gem2, this.board);
+              specialBaseScore += collisionResult.baseScore;
+              
+              for (const g of collisionResult.gemsToRemove) {
+                if (!gemsToRemove.some(existing => existing.id === g.id) && 
+                    !processedGems.has(g.id)) {
+                  gemsToRemove.push(g);
+                }
+              }
+              
+              for (const g of collisionResult.chainGems) {
+                if (!chainSpecialGems.some(existing => existing.id === g.id)) {
+                  chainSpecialGems.push(g);
+                }
+              }
+
+              if (!gemsToRemove.some(g => g.id === gem1.id)) {
+                gemsToRemove.push(gem1);
+              }
+              if (!gemsToRemove.some(g => g.id === gem2.id)) {
+                gemsToRemove.push(gem2);
+              }
+            }
+          }
+        }
+
         for (const gem of match.gems) {
+          if (processedGems.has(gem.id)) continue;
+          processedGems.add(gem.id);
+          
           if (gem.specialType === SpecialGemType.NONE) {
             if (!gemsToRemove.some(g => g.id === gem.id)) {
               gemsToRemove.push(gem);
             }
           } else {
-            const specialGems = getGemsToRemoveBySpecialGem(gem, this.board);
-            for (const sg of specialGems) {
-              if (!gemsToRemove.some(g => g.id === sg.id)) {
-                gemsToRemove.push(sg);
+            if (!hasSpecialCollision) {
+              const specialGems = getGemsToRemoveBySpecialGem(gem, this.board);
+              for (const sg of specialGems) {
+                if (!gemsToRemove.some(g => g.id === sg.id) && !processedGems.has(sg.id)) {
+                  if (sg.specialType !== SpecialGemType.NONE) {
+                    chainSpecialGems.push(sg);
+                  } else {
+                    gemsToRemove.push(sg);
+                  }
+                }
               }
+              specialBaseScore += getSpecialGemBaseScore(gem.specialType);
             }
-            gemsToRemove.push(gem);
+            if (!gemsToRemove.some(g => g.id === gem.id)) {
+              gemsToRemove.push(gem);
+            }
           }
         }
 
@@ -230,12 +404,27 @@ export class GameBoard {
         }
       }
 
+      if (chainSpecialGems.length > 0) {
+        const chainResult = processChainGems(chainSpecialGems, this.board);
+        specialBaseScore += chainResult.totalChainScore;
+        
+        for (const g of chainResult.gemsToRemove) {
+          if (!gemsToRemove.some(existing => existing.id === g.id)) {
+            gemsToRemove.push(g);
+          }
+        }
+      }
+
       const filteredSpecialGems = specialGemsToCreate;
 
+      const hasSpecial = specialBaseScore > 0 || 
+        gemsToRemove.some(g => g.specialType !== SpecialGemType.NONE);
+      
       const matchScore = this.calculateMatchScore(
         gemsToRemove.length,
         result.comboCount,
-        gemsToRemove.some(g => g.specialType !== SpecialGemType.NONE)
+        hasSpecial,
+        specialBaseScore
       );
       result.totalScore += matchScore;
       result.gemsCleared += gemsToRemove.length;
@@ -293,9 +482,10 @@ export class GameBoard {
   private calculateMatchScore(
     gemCount: number,
     combo: number,
-    hasSpecial: boolean
+    hasSpecial: boolean,
+    specialBaseScore: number = 0
   ): number {
-    let score = gemCount * SCORE_PER_GEM;
+    let score = gemCount * SCORE_PER_GEM + specialBaseScore;
     
     if (combo > 1) {
       score = Math.floor(score * Math.pow(SCORE_PER_COMBO_MULTIPLIER, combo - 1));
