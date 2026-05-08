@@ -3,6 +3,7 @@ import { Gem, ItemType, GameState, GameMode } from './types';
 import { BOARD_ROWS, BOARD_COLS, GEM_SIZE } from './constants';
 import { GameEngine, GameUpdate } from './GameEngine';
 import { GemView } from './GemView';
+import { SpecialGemCombination } from './specialGems';
 
 export class GameScene {
   private app: PIXI.Application;
@@ -391,6 +392,10 @@ export class GameScene {
       await this.handleSwap(gem1, gem2, isSwapBack);
     });
 
+    this.engine.setSpecialCombinationCallback(async (gem1, gem2, combination) => {
+      await this.handleSpecialCombination(gem1, gem2, combination);
+    });
+
     this.engine.setBoardUpdateCallback(async (gemsToRemove, gemsToFall, gemsToCreate, gemsToUpdate) => {
       await this.handleBoardUpdate(gemsToRemove, gemsToFall, gemsToCreate, gemsToUpdate);
     });
@@ -411,6 +416,323 @@ export class GameScene {
         view2.animateTo(targetX2, targetY2, 200)
       ]);
     }
+  }
+
+  private async handleSpecialCombination(
+    gem1: Gem,
+    gem2: Gem,
+    combination: SpecialGemCombination
+  ): Promise<void> {
+    const view1 = this.gemViews.get(gem1.id);
+    const view2 = this.gemViews.get(gem2.id);
+
+    await this.playCombinationAnimation(
+      gem1,
+      gem2,
+      combination,
+      view1,
+      view2
+    );
+  }
+
+  private async playCombinationAnimation(
+    gem1: Gem,
+    gem2: Gem,
+    combination: SpecialGemCombination,
+    view1: GemView | undefined,
+    view2: GemView | undefined
+  ): Promise<void> {
+    const centerX = ((gem1.col + gem2.col) / 2) * GEM_SIZE + GEM_SIZE / 2;
+    const centerY = ((gem1.row + gem2.row) / 2) * GEM_SIZE + GEM_SIZE / 2;
+
+    await Promise.all([
+      view1 ? this.pulseGem(view1) : Promise.resolve(),
+      view2 ? this.pulseGem(view2) : Promise.resolve()
+    ]);
+
+    switch (combination) {
+      case SpecialGemCombination.HORIZONTAL_VERTICAL_CROSS:
+        await this.playCrossAnimation(centerX, centerY, gem1.row, gem2.row, gem1.col, gem2.col);
+        break;
+      case SpecialGemCombination.HORIZONTAL_WRAPPED_THREE_ROWS:
+        const row = gem1.specialType !== undefined ? gem1.row : gem2.row;
+        await this.playThreeRowsAnimation(centerX, centerY, row);
+        break;
+      case SpecialGemCombination.VERTICAL_WRAPPED_THREE_COLS:
+        const col = gem1.specialType !== undefined ? gem1.col : gem2.col;
+        await this.playThreeColsAnimation(centerX, centerY, col);
+        break;
+      case SpecialGemCombination.WRAPPED_WRAPPED_5X5:
+        await this.play5x5AreaAnimation(centerX, centerY);
+        break;
+      case SpecialGemCombination.COLOR_BOMB_SPECIAL:
+        await this.playColorBombSpecialAnimation(centerX, centerY);
+        break;
+      case SpecialGemCombination.COLOR_BOMB_COLOR_BOMB:
+        await this.playColorBombBombAnimation(centerX, centerY);
+        break;
+      default:
+        await this.playDefaultCombinationAnimation(centerX, centerY);
+        break;
+    }
+  }
+
+  private async pulseGem(gemView: GemView): Promise<void> {
+    return new Promise((resolve) => {
+      const startScale = gemView.sprite.scale.x;
+      const startTime = Date.now();
+      const duration = 300;
+
+      const animate = () => {
+        const elapsed = Date.now() - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        
+        const scale = startScale * (1 + Math.sin(progress * Math.PI * 2) * 0.3);
+        gemView.sprite.scale.set(scale);
+
+        if (progress < 1) {
+          requestAnimationFrame(animate);
+        } else {
+          gemView.sprite.scale.set(startScale);
+          resolve();
+        }
+      };
+      animate();
+    });
+  }
+
+  private async playCrossAnimation(
+    _centerX: number,
+    _centerY: number,
+    row1: number,
+    row2: number,
+    col1: number,
+    col2: number
+  ): Promise<void> {
+    const effects: { graphic: PIXI.Graphics; color: number }[] = [];
+
+    const rows = [row1, row2];
+    const cols = [col1, col2];
+
+    for (const row of rows) {
+      const effect = this.createLineEffect(
+        0,
+        row * GEM_SIZE + GEM_SIZE / 2,
+        BOARD_COLS * GEM_SIZE,
+        row * GEM_SIZE + GEM_SIZE / 2,
+        0xffcc00
+      );
+      effects.push({ graphic: effect, color: 0xffcc00 });
+      this.boardContainer.addChild(effect);
+    }
+
+    for (const col of cols) {
+      const effect = this.createLineEffect(
+        col * GEM_SIZE + GEM_SIZE / 2,
+        0,
+        col * GEM_SIZE + GEM_SIZE / 2,
+        BOARD_ROWS * GEM_SIZE,
+        0xffcc00
+      );
+      effects.push({ graphic: effect, color: 0xffcc00 });
+      this.boardContainer.addChild(effect);
+    }
+
+    await this.animateEffectsAndRemove(effects, 500);
+  }
+
+  private async playThreeRowsAnimation(
+    _centerX: number,
+    _centerY: number,
+    baseRow: number
+  ): Promise<void> {
+    const effects: { graphic: PIXI.Graphics; color: number }[] = [];
+
+    for (let r = baseRow - 1; r <= baseRow + 1; r++) {
+      if (r >= 0 && r < BOARD_ROWS) {
+        const effect = this.createLineEffect(
+          0,
+          r * GEM_SIZE + GEM_SIZE / 2,
+          BOARD_COLS * GEM_SIZE,
+          r * GEM_SIZE + GEM_SIZE / 2,
+          0xff6600
+        );
+        effects.push({ graphic: effect, color: 0xff6600 });
+        this.boardContainer.addChild(effect);
+      }
+    }
+
+    await this.animateEffectsAndRemove(effects, 500);
+  }
+
+  private async playThreeColsAnimation(
+    _centerX: number,
+    _centerY: number,
+    baseCol: number
+  ): Promise<void> {
+    const effects: { graphic: PIXI.Graphics; color: number }[] = [];
+
+    for (let c = baseCol - 1; c <= baseCol + 1; c++) {
+      if (c >= 0 && c < BOARD_COLS) {
+        const effect = this.createLineEffect(
+          c * GEM_SIZE + GEM_SIZE / 2,
+          0,
+          c * GEM_SIZE + GEM_SIZE / 2,
+          BOARD_ROWS * GEM_SIZE,
+          0x66ff00
+        );
+        effects.push({ graphic: effect, color: 0x66ff00 });
+        this.boardContainer.addChild(effect);
+      }
+    }
+
+    await this.animateEffectsAndRemove(effects, 500);
+  }
+
+  private async play5x5AreaAnimation(
+    centerX: number,
+    centerY: number
+  ): Promise<void> {
+    const color = 0xff0066;
+    const effect = this.createExplosionEffect(centerX, centerY, color);
+    this.boardContainer.addChild(effect);
+    await this.animateExplosionEffect(effect, 600, color);
+  }
+
+  private async playColorBombSpecialAnimation(
+    centerX: number,
+    centerY: number
+  ): Promise<void> {
+    const color = 0x9900ff;
+    const effect = this.createExplosionEffect(centerX, centerY, color);
+    this.boardContainer.addChild(effect);
+    await this.animateExplosionEffect(effect, 700, color);
+  }
+
+  private async playColorBombBombAnimation(
+    centerX: number,
+    centerY: number
+  ): Promise<void> {
+    const color = 0xffffff;
+    const effect = this.createExplosionEffect(centerX, centerY, color);
+    this.boardContainer.addChild(effect);
+    await this.animateExplosionEffect(effect, 800, color);
+  }
+
+  private async playDefaultCombinationAnimation(
+    centerX: number,
+    centerY: number
+  ): Promise<void> {
+    const color = 0xffff00;
+    const effect = this.createExplosionEffect(centerX, centerY, color);
+    this.boardContainer.addChild(effect);
+    await this.animateExplosionEffect(effect, 400, color);
+  }
+
+  private createLineEffect(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    color: number
+  ): PIXI.Graphics {
+    const effect = new PIXI.Graphics();
+    (effect as any)._lineStartX = x1;
+    (effect as any)._lineStartY = y1;
+    (effect as any)._lineEndX = x2;
+    (effect as any)._lineEndY = y2;
+    effect.lineStyle(6, color, 1);
+    effect.moveTo(x1, y1);
+    effect.lineTo(x2, y2);
+    effect.alpha = 1;
+    return effect;
+  }
+
+  private createExplosionEffect(
+    x: number,
+    y: number,
+    color: number
+  ): PIXI.Graphics {
+    const effect = new PIXI.Graphics();
+    effect.x = x;
+    effect.y = y;
+    effect.beginFill(color, 0.8);
+    effect.drawCircle(0, 0, 10);
+    effect.endFill();
+    effect.alpha = 0.9;
+    return effect;
+  }
+
+  private async animateEffectsAndRemove(
+    effects: { graphic: PIXI.Graphics; color: number }[],
+    duration: number
+  ): Promise<void> {
+    return new Promise((resolve) => {
+      const startTime = Date.now();
+
+      const animate = () => {
+        const elapsed = Date.now() - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+
+        for (const { graphic, color } of effects) {
+          const gra = graphic as any;
+          graphic.alpha = 1 - progress;
+          graphic.clear();
+          graphic.lineStyle(6 + progress * 10, color, 1 - progress);
+          if (gra._lineStartX !== undefined) {
+            graphic.moveTo(gra._lineStartX, gra._lineStartY);
+            graphic.lineTo(gra._lineEndX, gra._lineEndY);
+          }
+        }
+
+        if (progress < 1) {
+          requestAnimationFrame(animate);
+        } else {
+          for (const { graphic } of effects) {
+            if (graphic.parent) {
+              graphic.parent.removeChild(graphic);
+            }
+            graphic.destroy();
+          }
+          resolve();
+        }
+      };
+      animate();
+    });
+  }
+
+  private async animateExplosionEffect(
+    effect: PIXI.Graphics,
+    duration: number,
+    color: number = 0xffffff
+  ): Promise<void> {
+    return new Promise((resolve) => {
+      const startTime = Date.now();
+      const startRadius = 10;
+      const endRadius = GEM_SIZE * 3;
+
+      const animate = () => {
+        const elapsed = Date.now() - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+
+        const radius = startRadius + (endRadius - startRadius) * progress;
+        effect.clear();
+        effect.beginFill(color, 0.8 * (1 - progress));
+        effect.drawCircle(0, 0, radius);
+        effect.endFill();
+
+        if (progress < 1) {
+          requestAnimationFrame(animate);
+        } else {
+          if (effect.parent) {
+            effect.parent.removeChild(effect);
+          }
+          effect.destroy();
+          resolve();
+        }
+      };
+      animate();
+    });
   }
 
   private handleGameUpdate(update: GameUpdate): void {

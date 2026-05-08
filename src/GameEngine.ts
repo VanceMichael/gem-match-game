@@ -5,7 +5,7 @@ import {
   ItemType,
   LevelConfig
 } from './types';
-import { GameBoard, SwapCallback, BoardUpdateCallback } from './GameBoard';
+import { GameBoard, SwapCallback, BoardUpdateCallback, SpecialCombinationCallback } from './GameBoard';
 import { LevelSystem } from './LevelSystem';
 import { ItemSystem } from './ItemSystem';
 
@@ -67,6 +67,10 @@ export class GameEngine {
 
   setBoardUpdateCallback(callback: BoardUpdateCallback): void {
     this.gameBoard.setUpdateCallback(callback);
+  }
+
+  setSpecialCombinationCallback(callback: SpecialCombinationCallback): void {
+    this.gameBoard.setSpecialCombinationCallback(callback);
   }
 
   getGameBoard(): GameBoard {
