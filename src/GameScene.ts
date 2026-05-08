@@ -1,6 +1,6 @@
 import * as PIXI from 'pixi.js';
-import { Gem, ItemType, GameState, GameMode } from './types';
-import { BOARD_ROWS, BOARD_COLS, GEM_SIZE } from './constants';
+import { Gem, ItemType, GameState, GameMode, SpecialCombination, CombinationResult } from './types';
+import { BOARD_ROWS, BOARD_COLS, GEM_SIZE, ANIMATION_DURATION_COMBINATION, COMBINATION_NAMES } from './constants';
 import { GameEngine, GameUpdate } from './GameEngine';
 import { GemView } from './GemView';
 
@@ -445,8 +445,13 @@ export class GameScene {
     gemsToRemove: Gem[],
     gemsToFall: { gem: Gem; targetRow: number }[],
     gemsToCreate: { gem: Gem; startRow: number }[],
-    gemsToUpdate: Gem[]
+    gemsToUpdate: Gem[],
+    combinationResult?: CombinationResult
   ): Promise<void> {
+    if (combinationResult && combinationResult.combination !== SpecialCombination.NONE) {
+      await this.playCombinationAnimation(combinationResult);
+    }
+
     const removePromises = gemsToRemove.map(gem => {
       const gemView = this.gemViews.get(gem.id);
       if (gemView) {
@@ -803,6 +808,240 @@ export class GameScene {
     this.updateItemCount(ItemType.HAMMER);
     this.updateItemCount(ItemType.SHUFFLE);
     this.updateItemCount(ItemType.EXTRA_MOVES);
+  }
+
+  private async playCombinationAnimation(result: CombinationResult): Promise<void> {
+    const { combination, triggerRow, triggerCol } = result;
+    const centerX = triggerCol * GEM_SIZE + GEM_SIZE / 2;
+    const centerY = triggerRow * GEM_SIZE + GEM_SIZE / 2;
+    const duration = ANIMATION_DURATION_COMBINATION;
+
+    const name = COMBINATION_NAMES[combination];
+    if (name) {
+      this.showCombinationLabel(name, centerX, centerY);
+    }
+
+    switch (combination) {
+      case SpecialCombination.CROSS:
+        await this.animateCrossEffect(centerX, centerY, duration);
+        break;
+      case SpecialCombination.THREE_ROWS:
+        await this.animateThreeRowsEffect(centerY, duration);
+        break;
+      case SpecialCombination.FIVE_BY_FIVE:
+        await this.animateFiveByFiveEffect(centerX, centerY, duration);
+        break;
+      case SpecialCombination.CROSS_PLUS_BLAST:
+        await this.animateCrossPlusBlastEffect(centerX, centerY, duration);
+        break;
+    }
+  }
+
+  private async animateCrossEffect(cx: number, cy: number, duration: number): Promise<void> {
+    const hLine = new PIXI.Graphics();
+    const vLine = new PIXI.Graphics();
+    const boardWidth = BOARD_COLS * GEM_SIZE;
+    const boardHeight = BOARD_ROWS * GEM_SIZE;
+
+    hLine.beginFill(0xffff00, 0.6);
+    hLine.drawRect(0, cy - GEM_SIZE / 4, boardWidth, GEM_SIZE / 2);
+    hLine.endFill();
+    this.boardContainer.addChild(hLine);
+
+    vLine.beginFill(0xffff00, 0.6);
+    vLine.drawRect(cx - GEM_SIZE / 4, 0, GEM_SIZE / 2, boardHeight);
+    vLine.endFill();
+    this.boardContainer.addChild(vLine);
+
+    const startTime = Date.now();
+    await new Promise<void>(resolve => {
+      const animate = () => {
+        const elapsed = Date.now() - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        const alpha = 0.6 * (1 - progress);
+        const scale = 1 + progress * 0.3;
+        hLine.alpha = alpha;
+        vLine.alpha = alpha;
+        hLine.scale.y = scale;
+        vLine.scale.x = scale;
+        if (progress < 1) {
+          requestAnimationFrame(animate);
+        } else {
+          this.boardContainer.removeChild(hLine);
+          this.boardContainer.removeChild(vLine);
+          hLine.destroy();
+          vLine.destroy();
+          resolve();
+        }
+      };
+      animate();
+    });
+  }
+
+  private async animateThreeRowsEffect(cy: number, duration: number): Promise<void> {
+    const lines: PIXI.Graphics[] = [];
+    const boardWidth = BOARD_COLS * GEM_SIZE;
+
+    for (let dr = -1; dr <= 1; dr++) {
+      const line = new PIXI.Graphics();
+      const y = cy + dr * GEM_SIZE;
+      line.beginFill(0xff4757, 0.5);
+      line.drawRect(-GEM_SIZE, y - GEM_SIZE / 3, boardWidth + GEM_SIZE * 2, GEM_SIZE * 2 / 3);
+      line.endFill();
+      this.boardContainer.addChild(line);
+      lines.push(line);
+    }
+
+    const startTime = Date.now();
+    await new Promise<void>(resolve => {
+      const animate = () => {
+        const elapsed = Date.now() - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        const alpha = 0.5 * (1 - progress);
+        for (const line of lines) {
+          line.alpha = alpha;
+        }
+        if (progress < 1) {
+          requestAnimationFrame(animate);
+        } else {
+          for (const line of lines) {
+            this.boardContainer.removeChild(line);
+            line.destroy();
+          }
+          resolve();
+        }
+      };
+      animate();
+    });
+  }
+
+  private async animateFiveByFiveEffect(cx: number, cy: number, duration: number): Promise<void> {
+    const radius = GEM_SIZE * 2.5;
+    const ring = new PIXI.Graphics();
+    ring.lineStyle(6, 0xff6348, 0.8);
+    ring.drawCircle(cx, cy, radius);
+    this.boardContainer.addChild(ring);
+
+    const fill = new PIXI.Graphics();
+    fill.beginFill(0xff6348, 0.3);
+    fill.drawCircle(cx, cy, radius);
+    fill.endFill();
+    this.boardContainer.addChild(fill);
+
+    const startTime = Date.now();
+    await new Promise<void>(resolve => {
+      const animate = () => {
+        const elapsed = Date.now() - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        const scale = 1 + progress * 0.5;
+        const alpha = 1 - progress;
+        ring.alpha = alpha * 0.8;
+        fill.alpha = alpha * 0.3;
+        ring.scale.set(scale);
+        fill.scale.set(scale);
+        if (progress < 1) {
+          requestAnimationFrame(animate);
+        } else {
+          this.boardContainer.removeChild(ring);
+          this.boardContainer.removeChild(fill);
+          ring.destroy();
+          fill.destroy();
+          resolve();
+        }
+      };
+      animate();
+    });
+  }
+
+  private async animateCrossPlusBlastEffect(cx: number, cy: number, duration: number): Promise<void> {
+    const boardWidth = BOARD_COLS * GEM_SIZE;
+    const boardHeight = BOARD_ROWS * GEM_SIZE;
+    const currentCY = cy;
+
+    const hLine = new PIXI.Graphics();
+    hLine.beginFill(0x3742fa, 0.6);
+    hLine.drawRect(0, currentCY - GEM_SIZE / 3, boardWidth, GEM_SIZE * 2 / 3);
+    hLine.endFill();
+    this.boardContainer.addChild(hLine);
+
+    const vLine = new PIXI.Graphics();
+    vLine.beginFill(0x3742fa, 0.6);
+    vLine.drawRect(cx - GEM_SIZE / 3, 0, GEM_SIZE * 2 / 3, boardHeight);
+    vLine.endFill();
+    this.boardContainer.addChild(vLine);
+
+    const blast = new PIXI.Graphics();
+    const blastRadius = GEM_SIZE * 1.5;
+    blast.beginFill(0x8e44ad, 0.5);
+    blast.drawCircle(cx, cy, blastRadius);
+    blast.endFill();
+    this.boardContainer.addChild(blast);
+
+    const startTime = Date.now();
+    await new Promise<void>(resolve => {
+      const animate = () => {
+        const elapsed = Date.now() - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        const alpha = 1 - progress;
+        const scale = 1 + progress * 0.4;
+        hLine.alpha = alpha * 0.6;
+        vLine.alpha = alpha * 0.6;
+        blast.alpha = alpha * 0.5;
+        blast.scale.set(scale);
+        if (progress < 1) {
+          requestAnimationFrame(animate);
+        } else {
+          this.boardContainer.removeChild(hLine);
+          this.boardContainer.removeChild(vLine);
+          this.boardContainer.removeChild(blast);
+          hLine.destroy();
+          vLine.destroy();
+          blast.destroy();
+          resolve();
+        }
+      };
+      animate();
+    });
+  }
+
+  private showCombinationLabel(name: string, cx: number, cy: number): void {
+    const style = new PIXI.TextStyle({
+      fontFamily: 'Arial Black',
+      fontSize: 22,
+      fill: '#ffffff',
+      stroke: '#000000',
+      strokeThickness: 4,
+      align: 'center',
+      dropShadow: true,
+      dropShadowColor: '#000000',
+      dropShadowBlur: 3,
+      dropShadowAngle: Math.PI / 6,
+      dropShadowDistance: 3,
+    });
+
+    const text = new PIXI.Text(name, style);
+    text.x = cx;
+    text.y = cy - 30;
+    text.anchor.set(0.5);
+    this.boardContainer.addChild(text);
+
+    const startTime = Date.now();
+    const totalDuration = 1200;
+    const animate = () => {
+      const elapsed = Date.now() - startTime;
+      const progress = Math.min(elapsed / totalDuration, 1);
+      text.y = cy - 30 - progress * 40;
+      text.alpha = 1 - progress;
+      if (progress < 1) {
+        requestAnimationFrame(animate);
+      } else {
+        if (text.parent) {
+          text.parent.removeChild(text);
+        }
+        text.destroy();
+      }
+    };
+    animate();
   }
 
   public destroy(): void {

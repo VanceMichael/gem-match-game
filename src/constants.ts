@@ -1,4 +1,4 @@
-import { GemType, LevelConfig, GameMode, ItemType } from './types';
+import { GemType, LevelConfig, GameMode, ItemType, SpecialCombination } from './types';
 
 export const BOARD_ROWS = 8;
 export const BOARD_COLS = 8;
@@ -26,6 +26,24 @@ export const GEM_NAMES: { [key in GemType]: string } = {
 export const SCORE_PER_GEM = 10;
 export const SCORE_PER_COMBO_MULTIPLIER = 1.5;
 export const SCORE_SPECIAL_GEM_MULTIPLIER = 2;
+
+export const COMBINATION_SCORE_MULTIPLIERS: { [key in SpecialCombination]: number } = {
+  [SpecialCombination.NONE]: 1,
+  [SpecialCombination.CROSS]: 3,
+  [SpecialCombination.THREE_ROWS]: 4,
+  [SpecialCombination.FIVE_BY_FIVE]: 5,
+  [SpecialCombination.CROSS_PLUS_BLAST]: 6
+};
+
+export const COMBINATION_NAMES: { [key in SpecialCombination]: string } = {
+  [SpecialCombination.NONE]: '',
+  [SpecialCombination.CROSS]: '十字清除',
+  [SpecialCombination.THREE_ROWS]: '三行清除',
+  [SpecialCombination.FIVE_BY_FIVE]: '5×5清除',
+  [SpecialCombination.CROSS_PLUS_BLAST]: '十字+爆破'
+};
+
+export const ANIMATION_DURATION_COMBINATION = 600;
 
 export const ANIMATION_DURATION_SWAP = 200;
 export const ANIMATION_DURATION_REMOVE = 300;
